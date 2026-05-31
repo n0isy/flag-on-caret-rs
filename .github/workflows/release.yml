@@ -25,6 +25,16 @@ jobs:
         with:
           components: clippy
 
+      - name: Determine version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0-dev" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Clippy (deny warnings)
         run: cargo clippy --release --all-targets -- -D warnings
 
@@ -45,6 +55,7 @@ jobs:
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
           Copy-Item target/release/FlagOnCaret.exe installer/FlagOnCaret.exe
           $ver = "${{ steps.ver.outputs.version }}"
+          if (-not $ver) { $ver = "0.0.0" }
           & $iscc "/DMyAppVersion=$ver" installer/FlagOnCaret.iss
           Copy-Item installer/FlagOnCaret_setup.exe dist/FlagOnCaret_setup.exe
 
