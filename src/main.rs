@@ -25,7 +25,7 @@ use windows_sys::Win32::Graphics::Gdi::{
     InvalidateRect, ReleaseDC, SelectObject, HBITMAP, HDC, PAINTSTRUCT, SRCCOPY,
 };
 use windows_sys::Win32::Graphics::GdiPlus::{
-    GdipAddPathArcI, GdipClosePathFigure, GdipCreateBitmapFromFile, GdipCreateBitmapFromScan0,
+    GdipAddPathArcI, GdipClosePathFigure, GdipCreateBitmapFromScan0, GdipCreateBitmapFromStream,
     GdipCreateFont, GdipCreateFontFamilyFromName, GdipCreateHBITMAPFromBitmap,
     GdipCreateHICONFromBitmap, GdipCreateImageAttributes, GdipCreateLineBrushFromRectI,
     GdipCreatePath, GdipCreateSolidFill, GdipCreateStringFormat, GdipDeleteBrush, GdipDeleteFont,
@@ -41,6 +41,9 @@ use windows_sys::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+
+use windows::core::Interface;
+use windows::Win32::UI::Shell::SHCreateMemStream;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetCursorInfo, GetCursorPos,
     GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowThreadProcessId, LoadCursorW,
@@ -141,11 +144,43 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-fn exe_dir() -> std::path::PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
+/// Assets are baked into the exe (no external files needed at runtime).
+mod assets {
+    macro_rules! flag {
+        ($name:literal) => {
+            ($name, include_bytes!(concat!("../assets/flags/", $name, ".png")) as &[u8])
+        };
+    }
+    static FLAGS: &[(&str, &[u8])] = &[
+        flag!("be-BY"),
+        flag!("de-DE"),
+        flag!("en-GB"),
+        flag!("en-US"),
+        flag!("fr-FR"),
+        flag!("pl-PL"),
+        flag!("ru-RU"),
+        flag!("uk-UA"),
+    ];
+    pub static CURSOR: &[u8] = include_bytes!("../assets/cursors/cursor.png");
+    pub static ARROW: &[u8] = include_bytes!("../assets/cursors/arrow.png");
+
+    pub fn flag(locale: &str) -> Option<&'static [u8]> {
+        FLAGS.iter().find(|(n, _)| *n == locale).map(|(_, b)| *b)
+    }
+}
+
+/// Decode an embedded PNG into a GDI+ bitmap via an in-memory IStream.
+/// GDI+ keeps its own reference to the stream, so dropping ours is fine.
+fn gp_from_png(bytes: &[u8]) -> *mut GpBitmap {
+    unsafe {
+        let stream = match SHCreateMemStream(Some(bytes)) {
+            Some(s) => s,
+            None => return std::ptr::null_mut(),
+        };
+        let mut bmp: *mut GpBitmap = std::ptr::null_mut();
+        GdipCreateBitmapFromStream(stream.as_raw(), &mut bmp);
+        bmp
+    }
 }
 
 /// LANGID (low word of the focused thread's HKL).
@@ -195,10 +230,8 @@ fn flag_src(st: &mut State, langid: u32) -> *mut GpBitmap {
     }
     let mut bmp: *mut GpBitmap = std::ptr::null_mut();
     if let Some(loc) = locale_name(langid) {
-        let path = exe_dir().join("flags").join(format!("{loc}.png"));
-        let wpath = wide(&path.to_string_lossy());
-        unsafe {
-            GdipCreateBitmapFromFile(wpath.as_ptr(), &mut bmp);
+        if let Some(png) = assets::flag(&loc) {
+            bmp = gp_from_png(png);
         }
     }
     if bmp.is_null() {
@@ -290,14 +323,8 @@ fn scaled_flag_hbitmap(src: *mut GpBitmap, w: i32, h: i32) -> HBITMAP {
     }
 }
 
-fn cursor_draft(path: &str) -> *mut GpBitmap {
-    let p = exe_dir().join("cursors").join(path);
-    let wp = wide(&p.to_string_lossy());
-    let mut bmp: *mut GpBitmap = std::ptr::null_mut();
-    unsafe {
-        GdipCreateBitmapFromFile(wp.as_ptr(), &mut bmp);
-    }
-    bmp
+fn cursor_draft(bytes: &[u8]) -> *mut GpBitmap {
+    gp_from_png(bytes)
 }
 
 /// Invert color matrix (LangBarXX GenerateColorMatrix modus 6).
@@ -557,10 +584,10 @@ unsafe extern "system" fn cursor_timer(_h: HWND, _m: u32, _id: usize, _t: u32) {
             return;
         }
         if st.ibeam_draft.is_null() {
-            st.ibeam_draft = cursor_draft("cursor.png");
+            st.ibeam_draft = cursor_draft(assets::CURSOR);
         }
         if st.arrow_draft.is_null() {
-            st.arrow_draft = cursor_draft("arrow.png");
+            st.arrow_draft = cursor_draft(assets::ARROW);
         }
         let draft = match kind {
             CursorKind::IBeam => st.ibeam_draft,

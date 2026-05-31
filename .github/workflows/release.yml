@@ -31,21 +31,30 @@ jobs:
       - name: Build
         run: cargo build --release
 
-      - name: Package portable zip
+      - name: Package portable zip (self-contained exe)
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist/FlagOnCaret | Out-Null
-          Copy-Item target/release/FlagOnCaret.exe dist/FlagOnCaret/
-          Copy-Item -Recurse assets/flags   dist/FlagOnCaret/flags
-          Copy-Item -Recurse assets/cursors dist/FlagOnCaret/cursors
-          Copy-Item README.md dist/FlagOnCaret/
-          Compress-Archive -Path dist/FlagOnCaret -DestinationPath dist/FlagOnCaret_portable.zip -Force
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/FlagOnCaret.exe dist/FlagOnCaret.exe
+          Compress-Archive -Path dist/FlagOnCaret.exe, README.md -DestinationPath dist/FlagOnCaret_portable.zip -Force
 
-      - name: Upload build artifact
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          Copy-Item target/release/FlagOnCaret.exe installer/FlagOnCaret.exe
+          $ver = "${{ steps.ver.outputs.version }}"
+          & $iscc "/DMyAppVersion=$ver" installer/FlagOnCaret.iss
+          Copy-Item installer/FlagOnCaret_setup.exe dist/FlagOnCaret_setup.exe
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: FlagOnCaret-portable
-          path: dist/FlagOnCaret_portable.zip
+          name: FlagOnCaret-${{ steps.ver.outputs.version }}
+          path: |
+            dist/FlagOnCaret_portable.zip
+            dist/FlagOnCaret_setup.exe
           if-no-files-found: error
 
       - name: Publish GitHub Release
@@ -53,4 +62,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: dist/FlagOnCaret_portable.zip
+          files: |
+            dist/FlagOnCaret_portable.zip
+            dist/FlagOnCaret_setup.exe

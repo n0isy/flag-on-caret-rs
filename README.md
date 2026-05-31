@@ -72,9 +72,20 @@ sudo apt-get install -y gcc-mingw-w64-x86-64
 cargo build --release --target x86_64-pc-windows-gnu
 ```
 
-Ship `FlagOnCaret.exe` together with the `flags/` and `cursors/` folders (the
-program loads them from its own directory at runtime). Releases bundle them as
-`FlagOnCaret_portable.zip`.
+`FlagOnCaret.exe` is **self-contained** — the flag PNGs and cursor drafts are
+baked into the binary with `include_bytes!` and decoded from memory via GDI+
+(`SHCreateMemStream` + `GdipCreateBitmapFromStream`), so there are no external
+files to ship.
+
+Each release provides two downloads:
+
+| File | What it is |
+|------|------------|
+| `FlagOnCaret_setup.exe` | Inno Setup installer (shortcuts, optional autostart, uninstall). |
+| `FlagOnCaret_portable.zip` | Just the standalone `FlagOnCaret.exe`. |
+
+The installer is built from [`installer/FlagOnCaret.iss`](installer/FlagOnCaret.iss)
+with Inno Setup 6 (`ISCC`); CI builds it on every tagged release.
 
 ## Dependencies (freshest)
 
