@@ -23,10 +23,11 @@ assets come from upstream; only the implementation language is new.
 
 ## What is new in this repo
 
-- The entire implementation in safe-ish Rust over `windows-sys` + `trayicon`
-  (`src/main.rs`).
-- Caret detection via `GetGUIThreadInfo` (the AHK lib additionally did UIA + MSAA;
-  those fallbacks are a TODO here).
+- The implementation in Rust over `windows-sys` + `windows` + `trayicon`.
+- `src/caret.rs` — faithful port of `GetCaretLocation.ahk` (UIA `TextPattern2`
+  + MSAA `OBJID_CARET` + `GetGUIThreadInfo`, same class dispatch/fall-through).
+- `src/langcode.rs` — the LangBarXX `LangCode.ahk` table (287 entries),
+  generated verbatim from the original.
 - The Cargo build, cross-compile setup and CI/CD.
 
 ## Third-party crates

@@ -20,21 +20,33 @@ the implementation language changed. See [CREDITS.md](CREDITS.md).
 
 ---
 
-## Status
+## Status — full feature parity with the AHK original
 
 | Part | State |
 |------|-------|
 | Tray icon + **Exit** menu | ✅ (`trayicon`) |
 | Active-window keyboard layout | ✅ (`GetKeyboardLayout`) |
-| Caret flag — classic Win32 controls | ✅ (`GetGUIThreadInfo` + GDI+ color-key layered window) |
+| Caret flag — classic Win32 controls | ✅ (`GetGUIThreadInfo`) |
+| Caret flag — **Chromium** browsers | ✅ MSAA `OBJID_CARET` + `IAccessible::accLocation` |
+| Caret flag — **UWP / modern Notepad** | ✅ UI Automation `TextPattern2.GetCaretRange` |
 | Cursor flag — I-beam & arrow | ✅ (`SetSystemCursor`, restored via `SPI_SETCURSORS` on exit) |
-| Flag PNG per locale + placeholder | ✅ (GDI+ `GdipCreateBitmapFromFile`) |
-| Caret flag — **UWP / Chromium** (UIA + MSAA) | ⏳ TODO — the hard part (see `caret_pos`) |
-| I-beam brightness inversion / text-flag fallback | ⏳ TODO |
+| **I-beam colour inversion** on dark backgrounds | ✅ `GetPixel` sampling + GDI+ invert colour matrix |
+| Flag PNG per locale | ✅ full LangBarXX `LangCode` table (287 entries) |
+| **Text flag fallback** (no PNG) | ✅ GDI+ gradient rounded-rect + 2-letter code |
+| Guards: full screen, **#32768 menu**, **console window**, **secure desktop** | ✅ |
+| **Per-monitor-v2 DPI awareness** | ✅ `SetProcessDpiAwarenessContext` |
+
+The caret detection (`src/caret.rs`) is a faithful port of LangBarXX's
+`GetCaretLocation.ahk`: it dispatches by window class to UIA → MSAA →
+`GetGUIThreadInfo` with the same fall-through.
 
 > The program replaces the **system** I-beam/arrow cursors while running (same as
 > the original) and restores them on a clean exit. If killed, run
 > **Control Panel → Mouse → OK** to restore.
+>
+> ⚠️ Built and statically checked (clippy `-D warnings`, native MSVC + gnu
+> cross). Not yet smoke-tested on real hardware — runtime verification on
+> Windows is the remaining step.
 
 ## Why Rust here
 
@@ -68,7 +80,8 @@ program loads them from its own directory at runtime). Releases bundle them as
 
 | Crate | Version | Why |
 |-------|---------|-----|
-| [`windows-sys`](https://crates.io/crates/windows-sys) | 0.61 | raw Win32 + GDI+ FFI |
+| [`windows-sys`](https://crates.io/crates/windows-sys) | 0.61 | raw Win32 + GDI+ FFI (window, cursor, GDI+) |
+| [`windows`](https://crates.io/crates/windows) | 0.62 | typed COM for UI Automation + MSAA caret |
 | [`trayicon`](https://crates.io/crates/trayicon) | 0.4 | tray icon + menu (Windows path = `winapi` only) |
 
 Rust edition **2024**.
