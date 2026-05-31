@@ -30,7 +30,9 @@ the implementation language changed. See [CREDITS.md](CREDITS.md).
 | Caret flag — **Chromium** browsers | ✅ MSAA `OBJID_CARET` + `IAccessible::accLocation` |
 | Caret flag — **UWP / modern Notepad** | ✅ UI Automation `TextPattern2.GetCaretRange` |
 | Cursor flag — I-beam & arrow | ✅ (`SetSystemCursor`, restored via `SPI_SETCURSORS` on exit) |
+| **Cursor size scales with monitor DPI** | ✅ `GetDpiForWindow` (matches the native cursor on HiDPI) |
 | **I-beam colour inversion** on dark backgrounds | ✅ `GetPixel` sampling + GDI+ invert colour matrix |
+| **Console layout** (Win+Space in conhost) | ✅ `AttachConsole` + `GetConsoleKeyboardLayoutNameW` |
 | Flag PNG per locale | ✅ full LangBarXX `LangCode` table (287 entries) |
 | **Text flag fallback** (no PNG) | ✅ GDI+ gradient rounded-rect + 2-letter code |
 | Guards: full screen, **#32768 menu**, **console window**, **secure desktop** | ✅ |

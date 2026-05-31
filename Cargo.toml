@@ -1,6 +1,6 @@
 [package]
 name = "flag-on-caret"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.85"
 license = "LGPL-3.0-or-later"
@@ -24,6 +24,7 @@ features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_HiDpi",
     "Win32_System_Com",
+    "Win32_System_Console",
     "Win32_System_LibraryLoader",
     "Win32_System_StationsAndDesktops",
     "Win32_Globalization",

@@ -36,9 +36,11 @@ use windows_sys::Win32::Graphics::GdiPlus::{
     GdipSetStringFormatAlign, GdipSetStringFormatLineAlign, GdiplusStartup, GdiplusStartupInput,
     ColorMatrix, GpBitmap, GpGraphics, Rect as GpRect, RectF,
 };
+use windows_sys::Win32::System::Console::{AttachConsole, FreeConsole};
+use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::StationsAndDesktops::{CloseDesktop, OpenInputDesktop};
 use windows_sys::Win32::UI::HiDpi::{
-    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 
@@ -47,9 +49,9 @@ use windows::Win32::UI::Shell::SHCreateMemStream;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetCursorInfo, GetCursorPos,
     GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowThreadProcessId, LoadCursorW,
-    PostQuitMessage, RegisterClassW, SetLayeredWindowAttributes, SetSystemCursor, SetTimer,
-    SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage, CURSORINFO, IDC_ARROW,
-    IDC_IBEAM, MSG, WNDCLASSW,
+    GetClassNameW, PostQuitMessage, RegisterClassW, SetLayeredWindowAttributes, SetSystemCursor,
+    SetTimer, SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage, WindowFromPoint,
+    CURSORINFO, IDC_ARROW, IDC_IBEAM, MSG, WNDCLASSW,
 };
 
 // ---- Win32 constants not always re-exported by feature ----
@@ -113,6 +115,7 @@ struct State {
     cursor_kind: Option<CursorKind>,
     cursor_layout: u32,
     cursor_dark: bool,
+    cursor_dpi: u32,
     cursor_time: Instant,
 }
 
@@ -131,6 +134,7 @@ impl State {
             cursor_kind: None,
             cursor_layout: 0,
             cursor_dark: false,
+            cursor_dpi: 0,
             cursor_time: Instant::now(),
         }
     }
@@ -138,6 +142,8 @@ impl State {
 
 thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::new());
+    // Console layout is expensive to query (AttachConsole), so cache it briefly.
+    static CONSOLE_CACHE: RefCell<(u32, Instant)> = RefCell::new((0, Instant::now()));
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -183,16 +189,81 @@ fn gp_from_png(bytes: &[u8]) -> *mut GpBitmap {
     }
 }
 
-/// LANGID (low word of the focused thread's HKL).
+fn class_of(hwnd: HWND) -> String {
+    unsafe {
+        let mut buf = [0u16; 256];
+        let n = GetClassNameW(hwnd, buf.as_mut_ptr(), 256);
+        if n <= 0 {
+            String::new()
+        } else {
+            String::from_utf16_lossy(&buf[..n as usize])
+        }
+    }
+}
+
+/// LANGID of the focused thread's HKL, with the console special-case from
+/// LangBarXX `InputLayout.ahk` (`GetConsoleKeyboardLayoutName` via AttachConsole).
 fn current_layout() -> u32 {
     unsafe {
         let fg = GetForegroundWindow();
         if fg.is_null() {
             return 0;
         }
+        if class_of(fg) == "ConsoleWindowClass" {
+            return CONSOLE_CACHE.with(|c| {
+                let mut c = c.borrow_mut();
+                if c.0 != 0 && c.1.elapsed().as_millis() < 200 {
+                    return c.0;
+                }
+                if let Some(l) = console_layout(fg) {
+                    *c = (l, Instant::now());
+                    return l;
+                }
+                c.0
+            });
+        }
         let tid = GetWindowThreadProcessId(fg, std::ptr::null_mut());
         let hkl = GetKeyboardLayout(tid);
         (hkl as usize as u32) & 0xFFFF
+    }
+}
+
+/// Console keyboard layout via AttachConsole + kernel32!GetConsoleKeyboardLayoutNameW.
+fn console_layout(hwnd: HWND) -> Option<u32> {
+    unsafe {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        if pid == 0 || AttachConsole(pid) == 0 {
+            return None;
+        }
+        let k32 = GetModuleHandleW(wide("kernel32.dll").as_ptr());
+        let proc = GetProcAddress(k32, c"GetConsoleKeyboardLayoutNameW".as_ptr() as *const u8);
+        let mut klid = [0u16; 16];
+        let ok = match proc {
+            Some(p) => {
+                let f: unsafe extern "system" fn(*mut u16) -> i32 = std::mem::transmute(p);
+                f(klid.as_mut_ptr())
+            }
+            None => 0,
+        };
+        FreeConsole();
+        if ok == 0 {
+            return None;
+        }
+        let end = klid.iter().position(|&c| c == 0).unwrap_or(klid.len());
+        let s = String::from_utf16_lossy(&klid[..end]);
+        u32::from_str_radix(s.trim(), 16).ok().map(|v| v & 0xFFFF)
+    }
+}
+
+/// DPI of the monitor under the mouse cursor (per-monitor aware).
+fn cursor_dpi() -> u32 {
+    unsafe {
+        let mut pt: POINT = std::mem::zeroed();
+        GetCursorPos(&mut pt);
+        let hw = WindowFromPoint(pt);
+        let d = if hw.is_null() { 0 } else { GetDpiForWindow(hw) };
+        if d == 0 { 96 } else { d }
     }
 }
 
@@ -340,9 +411,15 @@ fn invert_matrix() -> ColorMatrix {
     }
 }
 
-/// Compose a flagged cursor HICON (96x96, hotspot = center).
-fn build_cursor_hicon(draft: *mut GpBitmap, flag: *mut GpBitmap, kind: CursorKind, dark: bool) -> isize {
-    let cs = CURSOR_SIZE;
+/// Compose a flagged cursor HICON (3*cs canvas, hotspot = center). `cs` is the
+/// DPI-scaled cursor glyph size so it matches the native cursor at any scale.
+fn build_cursor_hicon(
+    draft: *mut GpBitmap,
+    flag: *mut GpBitmap,
+    kind: CursorKind,
+    dark: bool,
+    cs: i32,
+) -> isize {
     let fx = (cs as f32 * (1.5 + CFLAG_X as f32 / 32.0)) as i32;
     let fy = (cs as f32 * (1.5 + CFLAG_Y as f32 / 32.0)) as i32;
     let fw = cs * CFLAG_W / 32;
@@ -479,14 +556,9 @@ fn foreground_class() -> String {
     unsafe {
         let fg = GetForegroundWindow();
         if fg.is_null() {
-            return String::new();
-        }
-        let mut buf = [0u16; 256];
-        let n = windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW(fg, buf.as_mut_ptr(), 256);
-        if n <= 0 {
             String::new()
         } else {
-            String::from_utf16_lossy(&buf[..n as usize])
+            class_of(fg)
         }
     }
 }
@@ -574,11 +646,14 @@ unsafe extern "system" fn cursor_timer(_h: HWND, _m: u32, _id: usize, _t: u32) {
         return;
     }
     let dark = matches!(kind, CursorKind::IBeam) && cursor_bg_dark();
+    let dpi = cursor_dpi();
+    let cs = (CURSOR_SIZE * dpi as i32 + 48) / 96; // glyph size scaled to monitor DPI
     STATE.with(|s| {
         let mut st = s.borrow_mut();
         if st.cursor_kind == Some(kind)
             && st.cursor_layout == langid
             && st.cursor_dark == dark
+            && st.cursor_dpi == dpi
             && st.cursor_time.elapsed().as_millis() < 300
         {
             return;
@@ -597,7 +672,7 @@ unsafe extern "system" fn cursor_timer(_h: HWND, _m: u32, _id: usize, _t: u32) {
             return;
         }
         let flag = flag_src(&mut st, langid);
-        let hicon = build_cursor_hicon(draft, flag, kind, dark);
+        let hicon = build_cursor_hicon(draft, flag, kind, dark, cs);
         if hicon != 0 {
             let id = match kind {
                 CursorKind::IBeam => OCR_IBEAM,
@@ -607,6 +682,7 @@ unsafe extern "system" fn cursor_timer(_h: HWND, _m: u32, _id: usize, _t: u32) {
             st.cursor_kind = Some(kind);
             st.cursor_layout = langid;
             st.cursor_dark = dark;
+            st.cursor_dpi = dpi;
             st.cursor_time = Instant::now();
         }
     });
