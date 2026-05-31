@@ -31,10 +31,11 @@ use windows_sys::Win32::Graphics::GdiPlus::{
     GdipCreatePath, GdipCreateSolidFill, GdipCreateStringFormat, GdipDeleteBrush, GdipDeleteFont,
     GdipDeleteFontFamily, GdipDeleteGraphics, GdipDeletePath, GdipDeleteStringFormat,
     GdipDisposeImage, GdipDisposeImageAttributes, GdipDrawImageRectI, GdipDrawImageRectRectI,
-    GdipDrawString, GdipFillPath, GdipGetImageGraphicsContext, GdipGraphicsClear,
-    GdipSetImageAttributesColorMatrix, GdipSetInterpolationMode, GdipSetSmoothingMode,
-    GdipSetStringFormatAlign, GdipSetStringFormatLineAlign, GdiplusStartup, GdiplusStartupInput,
-    ColorMatrix, GpBitmap, GpGraphics, Rect as GpRect, RectF,
+    GdipCreateBitmapFromHICON, GdipDrawString, GdipFillPath, GdipGetImageGraphicsContext,
+    GdipGetImageHeight, GdipGetImageWidth, GdipGraphicsClear, GdipSetImageAttributesColorMatrix,
+    GdipSetInterpolationMode, GdipSetSmoothingMode, GdipSetStringFormatAlign,
+    GdipSetStringFormatLineAlign, GdiplusStartup, GdiplusStartupInput, ColorMatrix, GpBitmap,
+    GpGraphics, Rect as GpRect, RectF,
 };
 use windows_sys::Win32::System::Console::{AttachConsole, FreeConsole};
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
@@ -49,9 +50,9 @@ use windows::Win32::UI::Shell::SHCreateMemStream;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetCursorInfo, GetCursorPos,
     GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowThreadProcessId, LoadCursorW,
-    GetClassNameW, PostQuitMessage, RegisterClassW, SetLayeredWindowAttributes, SetSystemCursor,
-    SetTimer, SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage, WindowFromPoint,
-    CURSORINFO, IDC_ARROW, IDC_IBEAM, MSG, WNDCLASSW,
+    GetClassNameW, GetIconInfo, PostQuitMessage, RegisterClassW, SetLayeredWindowAttributes,
+    SetSystemCursor, SetTimer, SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage,
+    WindowFromPoint, CURSORINFO, ICONINFO, IDC_ARROW, IDC_IBEAM, MSG, WNDCLASSW,
 };
 
 // ---- Win32 constants not always re-exported by feature ----
@@ -82,12 +83,13 @@ const DX: i32 = 16;
 const DY: i32 = -12;
 const FLAG_W: i32 = 22;
 const FLAG_H: i32 = (FLAG_W * 3) / 4; // 16
-const CURSOR_SIZE: i32 = 32;
-const CFLAG_W: i32 = 18;
-const CFLAG_H: i32 = 12;
-const CFLAG_X: i32 = 4;
-const CFLAG_Y: i32 = 22;
 const INVERT_THRESHOLD: f64 = 100.0;
+// Cursor flag geometry, as ratios of the (DPI-scaled) cursor size. The flag is a
+// small badge on the user's own cursor — deliberately smaller than the caret flag.
+const CFLAG_W_RATIO: f32 = 0.42;
+const CFLAG_ASPECT: f32 = 12.0 / 18.0; // height / width
+const CFLAG_X_RATIO: f32 = 0.12;
+const CFLAG_Y_RATIO: f32 = 0.66;
 const KEY_ARGB: u32 = 0xFF3A_3B3C;
 const KEY_COLORREF: COLORREF = 0x003C_3B3A;
 
@@ -102,6 +104,17 @@ enum CursorKind {
     Arrow,
 }
 
+/// A snapshot of one of the user's real system cursors (taken before we start
+/// replacing cursors), with its hotspot — so flagged cursors look native.
+#[derive(Clone, Copy)]
+struct CapturedCursor {
+    bmp: *mut GpBitmap,
+    w: i32,
+    h: i32,
+    hx: i32,
+    hy: i32,
+}
+
 struct State {
     caret_hwnd: HWND,
     flag_dc: HDC,
@@ -110,8 +123,8 @@ struct State {
     flag_h: i32,
     last_caret_layout: u32,
     src_cache: HashMap<u32, *mut GpBitmap>,
-    ibeam_draft: *mut GpBitmap,
-    arrow_draft: *mut GpBitmap,
+    arrow_cur: Option<CapturedCursor>,
+    ibeam_cur: Option<CapturedCursor>,
     cursor_kind: Option<CursorKind>,
     cursor_layout: u32,
     cursor_dark: bool,
@@ -129,8 +142,8 @@ impl State {
             flag_h: FLAG_H,
             last_caret_layout: 0,
             src_cache: HashMap::new(),
-            ibeam_draft: std::ptr::null_mut(),
-            arrow_draft: std::ptr::null_mut(),
+            arrow_cur: None,
+            ibeam_cur: None,
             cursor_kind: None,
             cursor_layout: 0,
             cursor_dark: false,
@@ -167,9 +180,6 @@ mod assets {
         flag!("ru-RU"),
         flag!("uk-UA"),
     ];
-    pub static CURSOR: &[u8] = include_bytes!("../assets/cursors/cursor.png");
-    pub static ARROW: &[u8] = include_bytes!("../assets/cursors/arrow.png");
-
     pub fn flag(locale: &str) -> Option<&'static [u8]> {
         FLAGS.iter().find(|(n, _)| *n == locale).map(|(_, b)| *b)
     }
@@ -394,8 +404,35 @@ fn scaled_flag_hbitmap(src: *mut GpBitmap, w: i32, h: i32) -> HBITMAP {
     }
 }
 
-fn cursor_draft(bytes: &[u8]) -> *mut GpBitmap {
-    gp_from_png(bytes)
+/// Capture one of the user's current system cursors (by IDC_*) as a GDI+ bitmap
+/// plus its hotspot. Call before any SetSystemCursor replacement.
+fn capture_cursor(idc: windows_sys::core::PCWSTR) -> Option<CapturedCursor> {
+    unsafe {
+        let hcur = LoadCursorW(std::ptr::null_mut(), idc);
+        if hcur.is_null() {
+            return None;
+        }
+        let mut bmp: *mut GpBitmap = std::ptr::null_mut();
+        if GdipCreateBitmapFromHICON(hcur as _, &mut bmp) != 0 || bmp.is_null() {
+            return None;
+        }
+        let (mut w, mut h) = (0u32, 0u32);
+        GdipGetImageWidth(bmp as *mut _, &mut w);
+        GdipGetImageHeight(bmp as *mut _, &mut h);
+        let (mut hx, mut hy) = (w as i32 / 2, h as i32 / 2);
+        let mut ii: ICONINFO = std::mem::zeroed();
+        if GetIconInfo(hcur, &mut ii) != 0 {
+            hx = ii.xHotspot as i32;
+            hy = ii.yHotspot as i32;
+            if !ii.hbmMask.is_null() {
+                DeleteObject(ii.hbmMask);
+            }
+            if !ii.hbmColor.is_null() {
+                DeleteObject(ii.hbmColor);
+            }
+        }
+        Some(CapturedCursor { bmp, w: w as i32, h: h as i32, hx, hy })
+    }
 }
 
 /// Invert color matrix (LangBarXX GenerateColorMatrix modus 6).
@@ -411,22 +448,39 @@ fn invert_matrix() -> ColorMatrix {
     }
 }
 
-/// Compose a flagged cursor HICON (3*cs canvas, hotspot = center). `cs` is the
-/// DPI-scaled cursor glyph size so it matches the native cursor at any scale.
-fn build_cursor_hicon(
-    draft: *mut GpBitmap,
+/// Compose a flagged cursor HICON from the user's real cursor + a small flag.
+/// The cursor is scaled by the monitor DPI; the canvas is centred on the real
+/// hotspot so GdipCreateHICONFromBitmap (centre hotspot) preserves it.
+fn build_flagged_cursor(
+    cur: &CapturedCursor,
     flag: *mut GpBitmap,
     kind: CursorKind,
     dark: bool,
-    cs: i32,
+    dpi: u32,
 ) -> isize {
-    let fx = (cs as f32 * (1.5 + CFLAG_X as f32 / 32.0)) as i32;
-    let fy = (cs as f32 * (1.5 + CFLAG_Y as f32 / 32.0)) as i32;
-    let fw = cs * CFLAG_W / 32;
-    let fh = cs * CFLAG_H / 32;
+    let f = dpi as f32 / 96.0;
+    let sw = (cur.w as f32 * f).round() as i32;
+    let sh = (cur.h as f32 * f).round() as i32;
+    let shx = (cur.hx as f32 * f).round() as i32;
+    let shy = (cur.hy as f32 * f).round() as i32;
+    if sw <= 0 || sh <= 0 {
+        return 0;
+    }
+    let fw = (sw as f32 * CFLAG_W_RATIO).round().max(1.0) as i32;
+    let fh = (fw as f32 * CFLAG_ASPECT).round().max(1.0) as i32;
+    let fx = (sw as f32 * CFLAG_X_RATIO).round() as i32;
+    let fy = (sh as f32 * CFLAG_Y_RATIO).round() as i32;
+
+    let xs = [-shx, sw - shx, fx - shx, fx + fw - shx];
+    let ys = [-shy, sh - shy, fy - shy, fy + fh - shy];
+    let ext = xs.iter().chain(ys.iter()).map(|v| v.abs()).max().unwrap_or(sw);
+    let s = 2 * ext + 4;
+    let center = s / 2;
+    let (cx, cy) = (center - shx, center - shy);
+
     unsafe {
         let mut canvas: *mut GpBitmap = std::ptr::null_mut();
-        GdipCreateBitmapFromScan0(cs * 3, cs * 3, 0, PIXELFORMAT_32BPP_ARGB, std::ptr::null(), &mut canvas);
+        GdipCreateBitmapFromScan0(s, s, 0, PIXELFORMAT_32BPP_ARGB, std::ptr::null(), &mut canvas);
         let mut g: *mut GpGraphics = std::ptr::null_mut();
         if GdipGetImageGraphicsContext(canvas as *mut _, &mut g) != 0 {
             return 0;
@@ -435,13 +489,12 @@ fn build_cursor_hicon(
         GdipSetInterpolationMode(g, 7);
         match kind {
             CursorKind::IBeam => {
-                draw_draft(g, draft, cs, cs, cs, cs, dark);
-                GdipDrawImageRectI(g, flag as *mut _, fx, fy, fw, fh);
+                draw_cursor(g, cur, cx, cy, sw, sh, dark);
+                GdipDrawImageRectI(g, flag as *mut _, cx + fx, cy + fy, fw, fh);
             }
             CursorKind::Arrow => {
-                GdipDrawImageRectI(g, flag as *mut _, fx, fy, fw, fh);
-                let off = (cs as f32 * 1.5) as i32;
-                draw_draft(g, draft, off, off, cs, cs, false);
+                GdipDrawImageRectI(g, flag as *mut _, cx + fx, cy + fy, fw, fh);
+                draw_cursor(g, cur, cx, cy, sw, sh, false);
             }
         }
         GdipDeleteGraphics(g);
@@ -452,11 +505,19 @@ fn build_cursor_hicon(
     }
 }
 
-/// Draw the cursor draft, optionally colour-inverted (dark backgrounds).
-unsafe fn draw_draft(g: *mut GpGraphics, img: *mut GpBitmap, x: i32, y: i32, w: i32, h: i32, dark: bool) {
+/// Draw the captured cursor scaled to dw×dh at (dx,dy), optionally colour-inverted.
+unsafe fn draw_cursor(
+    g: *mut GpGraphics,
+    cur: &CapturedCursor,
+    dx: i32,
+    dy: i32,
+    dw: i32,
+    dh: i32,
+    dark: bool,
+) {
     unsafe {
         if !dark {
-            GdipDrawImageRectI(g, img as *mut _, x, y, w, h);
+            GdipDrawImageRectI(g, cur.bmp as *mut _, dx, dy, dw, dh);
             return;
         }
         let mut attr = std::ptr::null_mut();
@@ -464,7 +525,8 @@ unsafe fn draw_draft(g: *mut GpGraphics, img: *mut GpBitmap, x: i32, y: i32, w: 
         let m = invert_matrix();
         GdipSetImageAttributesColorMatrix(attr, 0, 1, &m, std::ptr::null(), 0);
         GdipDrawImageRectRectI(
-            g, img as *mut _, x, y, w, h, 0, 0, w, h, UNIT_PIXEL, attr, 0, std::ptr::null_mut(),
+            g, cur.bmp as *mut _, dx, dy, dw, dh, 0, 0, cur.w, cur.h, UNIT_PIXEL, attr, 0,
+            std::ptr::null_mut(),
         );
         GdipDisposeImageAttributes(attr);
     }
@@ -647,7 +709,6 @@ unsafe extern "system" fn cursor_timer(_h: HWND, _m: u32, _id: usize, _t: u32) {
     }
     let dark = matches!(kind, CursorKind::IBeam) && cursor_bg_dark();
     let dpi = cursor_dpi();
-    let cs = (CURSOR_SIZE * dpi as i32 + 48) / 96; // glyph size scaled to monitor DPI
     STATE.with(|s| {
         let mut st = s.borrow_mut();
         if st.cursor_kind == Some(kind)
@@ -658,21 +719,16 @@ unsafe extern "system" fn cursor_timer(_h: HWND, _m: u32, _id: usize, _t: u32) {
         {
             return;
         }
-        if st.ibeam_draft.is_null() {
-            st.ibeam_draft = cursor_draft(assets::CURSOR);
-        }
-        if st.arrow_draft.is_null() {
-            st.arrow_draft = cursor_draft(assets::ARROW);
-        }
-        let draft = match kind {
-            CursorKind::IBeam => st.ibeam_draft,
-            CursorKind::Arrow => st.arrow_draft,
+        let cur = match kind {
+            CursorKind::IBeam => st.ibeam_cur,
+            CursorKind::Arrow => st.arrow_cur,
         };
-        if draft.is_null() {
-            return;
-        }
+        let cur = match cur {
+            Some(c) => c,
+            None => return,
+        };
         let flag = flag_src(&mut st, langid);
-        let hicon = build_cursor_hicon(draft, flag, kind, dark, cs);
+        let hicon = build_flagged_cursor(&cur, flag, kind, dark, dpi);
         if hicon != 0 {
             let id = match kind {
                 CursorKind::IBeam => OCR_IBEAM,
@@ -701,6 +757,13 @@ fn main() {
         let mut input: GdiplusStartupInput = std::mem::zeroed();
         input.GdiplusVersion = 1;
         GdiplusStartup(&mut token, &input, std::ptr::null_mut());
+
+        // Snapshot the user's real cursors now, before we start replacing them.
+        STATE.with(|s| {
+            let mut st = s.borrow_mut();
+            st.arrow_cur = capture_cursor(IDC_ARROW);
+            st.ibeam_cur = capture_cursor(IDC_IBEAM);
+        });
 
         let cls = wide("FlagOnCaretWnd");
         let wc = WNDCLASSW {

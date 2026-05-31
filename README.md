@@ -29,7 +29,7 @@ the implementation language changed. See [CREDITS.md](CREDITS.md).
 | Caret flag — classic Win32 controls | ✅ (`GetGUIThreadInfo`) |
 | Caret flag — **Chromium** browsers | ✅ MSAA `OBJID_CARET` + `IAccessible::accLocation` |
 | Caret flag — **UWP / modern Notepad** | ✅ UI Automation `TextPattern2.GetCaretRange` |
-| Cursor flag — I-beam & arrow | ✅ (`SetSystemCursor`, restored via `SPI_SETCURSORS` on exit) |
+| Cursor flag on the **user's own cursors** | ✅ real arrow/I-beam captured at startup (`GdipCreateBitmapFromHICON` + hotspot), flag overlaid, `SetSystemCursor` (restored via `SPI_SETCURSORS` on exit) |
 | **Cursor size scales with monitor DPI** | ✅ `GetDpiForWindow` (matches the native cursor on HiDPI) |
 | **I-beam colour inversion** on dark backgrounds | ✅ `GetPixel` sampling + GDI+ invert colour matrix |
 | **Console layout** (Win+Space in conhost) | ✅ `AttachConsole` + `GetConsoleKeyboardLayoutNameW` |

@@ -70,3 +70,14 @@ begin
   else
     Result := ExpandConstant('{pf}')
 end;
+
+// Kill a running instance before (re)installing, so the exe can be overwritten.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/im FlagOnCaret.exe /f', '',
+       SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(500);
+  Result := '';
+end;
