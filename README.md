@@ -27,28 +27,32 @@ the implementation language changed. See [CREDITS.md](CREDITS.md).
 | Tray icon + **Exit** menu | ✅ (`trayicon`) |
 | Active-window keyboard layout | ✅ (`GetKeyboardLayout`) |
 | Caret flag — classic Win32 controls | ✅ (`GetGUIThreadInfo`) |
-| Caret flag — **Chromium** browsers | ✅ MSAA `OBJID_CARET` + `IAccessible::accLocation` |
-| Caret flag — **UWP / modern Notepad** | ✅ UI Automation `TextPattern2.GetCaretRange` |
-| Cursor flag on the **user's own cursors** | ✅ real arrow/I-beam captured at startup (`GdipCreateBitmapFromHICON` + hotspot), flag overlaid, `SetSystemCursor` (restored via `SPI_SETCURSORS` on exit) |
-| **Cursor size scales with monitor DPI** | ✅ `GetDpiForWindow` (matches the native cursor on HiDPI) |
-| **I-beam colour inversion** on dark backgrounds | ✅ `GetPixel` sampling + GDI+ invert colour matrix |
-| **Console layout** (Win+Space in conhost) | ✅ `AttachConsole` + `GetConsoleKeyboardLayoutNameW` |
-| Flag PNG per locale | ✅ full LangBarXX `LangCode` table (287 entries) |
-| **Text flag fallback** (no PNG) | ✅ GDI+ gradient rounded-rect + 2-letter code |
-| Guards: full screen, **#32768 menu**, **console window**, **secure desktop** | ✅ |
-| **Per-monitor-v2 DPI awareness** | ✅ `SetProcessDpiAwarenessContext` |
+| Caret flag — **Chromium** browsers | ✅ MSAA `OBJID_CARET` + `accLocation`; hides on blur via `accState` |
+| Caret flag — **UWP / modern Notepad** | ✅ UIA `TextPattern2.GetCaretRange`; hides on blur via `isActive` |
+| Cursor flag on the **user's own cursors** | ✅ real arrow/I-beam captured at startup (`DrawIconEx` on black+white → true alpha) + hotspot, flag overlaid, `SetSystemCursor` (restored via `SPI_SETCURSORS` on exit) |
+| **I-beam contrast** (white/black by background) | ✅ `GetPixel` sampling + GDI+ invert matrix (a static cursor can't XOR per-pixel like Windows) |
+| **Console layout** (Win+Space in conhost) | ✅ `AttachConsole` + `GetConsoleKeyboardLayoutNameW`, cached per-window |
+| Flag PNG per locale + **text fallback** | ✅ full LangBarXX `LangCode` table (287) + GDI+ gradient text flag |
+| Guards: full screen, **#32768 menu**, **secure desktop** | ✅ |
+| **Single instance**, per-monitor-v2 DPI, restore cursors before capture | ✅ |
 
 The caret detection (`src/caret.rs`) is a faithful port of LangBarXX's
 `GetCaretLocation.ahk`: it dispatches by window class to UIA → MSAA →
 `GetGUIThreadInfo` with the same fall-through.
 
-> The program replaces the **system** I-beam/arrow cursors while running (same as
-> the original) and restores them on a clean exit. If killed, run
-> **Control Panel → Mouse → OK** to restore.
->
-> ⚠️ Built and statically checked (clippy `-D warnings`, native MSVC + gnu
-> cross). Not yet smoke-tested on real hardware — runtime verification on
-> Windows is the remaining step.
+### Known limitations
+- **far2l** (and other non-conhost terminals): the flag shows, but **Win+Space
+  switching isn't detected** — far2l doesn't propagate the layout to the legacy
+  HKL, the console layout name, or the cross-thread-readable TSF API (only its
+  own thread's TSF, which the language bar reads). conhost-based terminals
+  (cmd, mingw) work.
+- The cursor flag is composited into a **static** system cursor, so the I-beam
+  picks one contrast colour from the background rather than inverting per-pixel.
+
+> The program replaces the **system** I-beam/arrow cursors while running and
+> restores them on a clean exit (and resets them before capturing, so a crashed
+> run can't poison the next one). If hard-killed, run **Control Panel → Mouse →
+> OK** to restore.
 
 ## Why Rust here
 

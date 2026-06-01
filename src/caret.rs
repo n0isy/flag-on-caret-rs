@@ -94,6 +94,9 @@ unsafe fn uia_caret() -> Option<(i32, i32)> {
                 el.GetCurrentPatternAs(UIA_TextPattern2Id).ok()?;
             let mut active = BOOL::default();
             let range = pat.GetCaretRange(&mut active).ok()?;
+            if active.0 == 0 {
+                return None; // the text control no longer has keyboard focus
+            }
             let psa = range.GetBoundingRectangles().ok()?;
             let rect = read_safearray_rect(psa)?;
             let (x, y) = (rect[0] as i32, rect[1] as i32);
@@ -136,7 +139,31 @@ unsafe fn msaa_caret(hwnd: HWND) -> Option<(i32, i32)> {
         let (mut l, mut t, mut w, mut h) = (0i32, 0i32, 0i32, 0i32);
         let child = childid_self(); // CHILDID_SELF (VT_I4 = 0)
         acc.accLocation(&mut l, &mut t, &mut w, &mut h, &child).ok()?;
+        // Chromium keeps returning the *last* caret rect after the field loses
+        // focus, so accLocation alone never hides. Use the caret's state: if it's
+        // invisible, there's no active caret -> hide. (Blink is an OS render
+        // effect, not a state change, so this doesn't flicker.)
+        if let Ok(state) = acc.get_accState(&child) {
+            if let Some(s) = variant_i4(&state) {
+                const STATE_SYSTEM_INVISIBLE: i32 = 0x8000;
+                if s & STATE_SYSTEM_INVISIBLE != 0 {
+                    return None;
+                }
+            }
+        }
         if l != 0 || t != 0 { Some((l, t)) } else { None }
+    }
+}
+
+/// Read an i32 out of a VT_I4 VARIANT (e.g. an MSAA state bitmask).
+unsafe fn variant_i4(v: &VARIANT) -> Option<i32> {
+    unsafe {
+        let inner = &*v.Anonymous.Anonymous;
+        if inner.vt == VT_I4 {
+            Some(inner.Anonymous.lVal)
+        } else {
+            None
+        }
     }
 }
 
