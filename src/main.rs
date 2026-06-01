@@ -943,7 +943,7 @@ fn main() {
             .sender(|e: &TrayEvent| match e {
                 TrayEvent::Exit => PostQuitMessage(0),
             })
-            .icon_from_buffer(include_bytes!("../assets/App.ico"))
+            .icon_from_buffer(include_bytes!("../icon/FlagOnCaret.ico"))
             .tooltip("FlagOnCaret")
             .menu(MenuBuilder::new().item("Выход", TrayEvent::Exit))
             .build()

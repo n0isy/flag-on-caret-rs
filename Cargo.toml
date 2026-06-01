@@ -1,6 +1,6 @@
 [package]
 name = "flag-on-caret"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 rust-version = "1.85"
 license = "LGPL-3.0-or-later"
@@ -46,6 +46,11 @@ features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ]
+
+[build-dependencies]
+# Embeds icon/FlagOnCaret.ico (+ version metadata) as the exe's Win32 resource,
+# so Explorer and Start-menu/desktop shortcuts show the app icon.
+winresource = "0.1"
 
 [profile.release]
 opt-level = "z"

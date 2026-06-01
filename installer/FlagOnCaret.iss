@@ -3,8 +3,9 @@
 ; so this installer just drops FlagOnCaret.exe, makes shortcuts and (optionally)
 ; sets autostart. Derived from the LangBarXX installer; LGPL-3.0.
 ;
-; Expects FlagOnCaret.exe and App.ico next to this .iss at compile time
-; (build.ps1 / CI stage them here).
+; Expects FlagOnCaret.exe next to this .iss at compile time (CI stages it here).
+; The app icon lives at ..\icon\FlagOnCaret.ico (also embedded in the exe, so
+; shortcuts pick it up automatically).
 
 #define MyAppName "FlagOnCaret"
 #ifndef MyAppVersion
@@ -31,7 +32,7 @@ PrivilegesRequired=none
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardImageFile=WizModernImage-IS.bmp
 WizardSmallImageFile=WizModernSmallImage-IS.bmp
-SetupIconFile=Install.ico
+SetupIconFile=..\icon\FlagOnCaret.ico
 ShowLanguageDialog=no
 DisableDirPage=auto
 
@@ -46,12 +47,11 @@ Name: "autorun"; Description: "Run at Windows startup"; Check: not IsTaskSelecte
 
 [Files]
 Source: "FlagOnCaret.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "App.ico";         DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}";         Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\App.ico"; Check: not IsTaskSelected('portablemode')
+Name: "{group}\{#MyAppName}";         Filename: "{app}\{#MyAppExeName}"; Check: not IsTaskSelected('portablemode')
 Name: "{group}\Uninstall";            Filename: "{uninstallexe}";        Check: not IsTaskSelected('portablemode')
-Name: "{commondesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\App.ico"; Tasks: desktopicon; Check: not IsTaskSelected('portablemode')
+Name: "{commondesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; Check: not IsTaskSelected('portablemode')
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Check: not IsTaskSelected('portablemode'); Flags: nowait postinstall

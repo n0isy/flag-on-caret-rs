@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.2] - 2026-06-01
+
+### Changed
+- New application icon (`icon/FlagOnCaret.ico` — the pixel-art flag on an
+  island). It is now the single source of truth, used for the **tray icon**,
+  **embedded into the exe** as a Win32 resource (so Explorer and shortcuts show
+  it), and as the **installer's setup icon**. Shortcuts use the exe's own
+  embedded icon, so the separate bundled `App.ico` / `Install.ico` are dropped.
+- Added `build.rs` (`winresource`) to embed the icon and Cargo version metadata
+  into the exe.
+
 ## [0.5.1] - 2026-06-01
 
 ### Fixed
