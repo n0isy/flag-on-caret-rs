@@ -238,19 +238,22 @@ fn current_layout() -> u32 {
             return 0;
         }
         if class_of(fg) == "ConsoleWindowClass" {
-            // conhost answers AttachConsole (mingw/cmd) and gives the real console
-            // layout. Non-conhost terminals (far2l) don't — so we probe once per
-            // window, cache "fallback", and never AttachConsole it again.
+            // The console keyboard-layout name is the authoritative source for a
+            // terminal. conhost (cmd, mingw) answers AttachConsole +
+            // GetConsoleKeyboardLayoutNameW; far2l and other non-conhost
+            // terminals don't — and for them the window-thread HKL is *frozen*
+            // (it never reflects their internal Win+Space), so falling back to it
+            // would paint a FALSE flag. So for a console window we trust *only*
+            // the console probe; if it won't answer, return 0 (suppress the flag)
+            // rather than show a layout we know we can't trust.
             let fg_id = fg as usize;
             let decision = CONSOLE_CACHE.with(|c| {
                 let mut c = c.borrow_mut();
                 if c.0 == fg_id {
                     match c.1 {
                         Some(l) if c.2.elapsed().as_millis() < 200 => return Some(l),
-                        // A *single* transient probe failure must not lock the
-                        // window onto the fallback forever (that lost Win+Space
-                        // detection in far2l). Cache the failure only briefly,
-                        // then re-probe.
+                        // Re-probe a failure after a short TTL instead of caching
+                        // it forever (cheap self-heal; keeps AttachConsole rare).
                         None if c.2.elapsed().as_millis() < 600 => return None,
                         _ => {} // expired -> re-probe
                     }
@@ -266,9 +269,8 @@ fn current_layout() -> u32 {
                     }
                 }
             });
-            if let Some(l) = decision {
-                return l;
-            }
+            // Never fall through to the (frozen) HKL for a console window.
+            return decision.unwrap_or(0);
         }
         let tid = GetWindowThreadProcessId(fg, std::ptr::null_mut());
         let hkl = GetKeyboardLayout(tid);
@@ -815,6 +817,19 @@ unsafe extern "system" fn cursor_timer(_h: HWND, _m: u32, _id: usize, _t: u32) {
     };
     let langid = current_layout();
     if langid == 0 {
+        // Unknown / untrustworthy foreground layout (e.g. far2l). Tear down any
+        // flagged system cursor we set earlier — once — so no false flag lingers
+        // over such a window. Clearing cursor_kind forces a clean rebuild for the
+        // next normal app. (The caret flag is already hidden by caret_timer.)
+        STATE.with(|s| {
+            let mut st = s.borrow_mut();
+            if st.cursor_kind.is_some() {
+                st.cursor_kind = None;
+                st.cursor_layout = 0;
+                drop(st);
+                restore_cursors();
+            }
+        });
         return;
     }
     // The captured I-beam reconstructs to WHITE (it's an inverting cursor sampled
